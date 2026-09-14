@@ -122,6 +122,16 @@
   </header>
 
   <main>
+    <!-- SELECTOR DE PERFIL ACTIVO -->
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 16px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <label style="margin:0; color:var(--primary); font-weight:700; white-space:nowrap;">👤 Perfil activo:</label>
+      <select id="active-user" style="font-weight:650; color:var(--primary);">
+        <option value="vicente">Vicente (Hermano)</option>
+        <option value="participante2">Participante 2</option>
+        <option value="participante3">Participante 3</option>
+      </select>
+    </div>
+
     <!-- HOY -->
     <section class="tab active" data-tab="hoy">
       <div class="card">
@@ -363,30 +373,63 @@
   const todayISO = () => new Date().toISOString().slice(0,10);
   const nowHM = () => new Date().toTimeString().slice(0,5);
 
+  // Obtiene el ID del usuario seleccionado actualmente
+  function getActiveUser(){
+    return $('#active-user') ? $('#active-user').value : 'vicente';
+  }
+
+  // Claves de localStorage aisladas por usuario
   const loadLocal = (k, def) => {
-    try { const v = localStorage.getItem('tfg_' + k); return v ? JSON.parse(v) : def; } catch(e) { return def; }
+    try { 
+      const user = getActiveUser();
+      const v = localStorage.getItem(`tfg_${user}_${k}`); 
+      return v ? JSON.parse(v) : def; 
+    } catch(e) { return def; }
   };
+  
   const saveLocal = (k, val) => {
-    try { localStorage.setItem('tfg_' + k, JSON.stringify(val)); } catch(e) {}
+    try { 
+      const user = getActiveUser();
+      localStorage.setItem(`tfg_${user}_${k}`, JSON.stringify(val)); 
+    } catch(e) {}
   };
 
-  let nutricion = loadLocal('nutricion', []);
-  let ejercicio = loadLocal('ejercicio', []);
-  let estres = loadLocal('estres', []);
-  let fisiologico = loadLocal('fisiologico', []);
-  let sueno = loadLocal('sueno', []);
-  let regimen = loadLocal('regimen', null);
+  let nutricion = [];
+  let ejercicio = [];
+  let estres = [];
+  let fisiologico = [];
+  let sueno = [];
+  let regimen = null;
+
+  function reloadUserData(){
+    nutricion = loadLocal('nutricion', []);
+    ejercicio = loadLocal('ejercicio', []);
+    estres = loadLocal('estres', []);
+    fisiologico = loadLocal('fisiologico', []);
+    sueno = loadLocal('sueno', []);
+    regimen = loadLocal('regimen', null);
+    
+    renderHoy();
+    renderNutricion();
+    renderEjercicio();
+    renderEstres();
+    renderRegimen();
+  }
 
   let reminderConfig = loadLocal('reminderConfig', {enabled:false,count:4,startHour:'08:00',endHour:'23:00'});
   let reminderSchedule = loadLocal('reminderSchedule', null);
 
-  // --- Cola de escrituras a la nube: evita perder datos si el usuario
-  // guarda un registro antes de que termine el inicio de sesión anónimo. ---
+  // Ruta base en Firestore para el usuario activo: personas/{userId}
+  function getUserDocRef(){
+    const userId = getActiveUser();
+    return db.collection('personas').doc(userId);
+  }
+
   let authReady = false;
   let pendingWrites = [];
   function cloudSet(collectionName, id, data){
     if(!db) return;
-    const doWrite = ()=> db.collection(collectionName).doc(id).set(data).catch(()=>{
+    const doWrite = ()=> getUserDocRef().collection(collectionName).doc(id).set(data).catch(()=>{
       showToast('⚠️ Guardado en el móvil, pero no se pudo copiar a la nube (revisa tu conexión).');
     });
     if(authReady) doWrite(); else pendingWrites.push(doWrite);
@@ -402,6 +445,12 @@
     $$('nav.tabbar button').forEach(b=> b.classList.toggle('active', b.dataset.nav===name));
   }
   $$('nav.tabbar button').forEach(b=> b.addEventListener('click', ()=> goTab(b.dataset.nav)));
+
+  // Al cambiar de usuario en el desplegable, recargamos sus datos
+  $('#active-user').addEventListener('change', ()=>{
+    reloadUserData();
+    showToast('Perfil cambiado a: ' + $('#active-user').selectedOptions[0].text);
+  });
 
   function ensureDDMMYYYY(val){
     if(!val) return '';
@@ -520,7 +569,14 @@
   }
 
   function renderRegimen(){
-    if(!regimen) return;
+    if(!regimen) {
+      $('#reg-desayuno').value = '';
+      $('#reg-almuerzo').value = '';
+      $('#reg-comida').value = '';
+      $('#reg-merienda').value = '';
+      $('#reg-cena').value = '';
+      return;
+    }
     $('#reg-desayuno').value = regimen.desayuno ?? '';
     $('#reg-almuerzo').value = regimen.almuerzo ?? '';
     $('#reg-comida').value = regimen.comida ?? '';
@@ -534,7 +590,7 @@
     if(type==='ejercicio') { ejercicio = ejercicio.filter(x=>x.id!==id); saveLocal('ejercicio', ejercicio); renderEjercicio(); }
     if(type==='estres') { estres = estres.filter(x=>x.id!==id); saveLocal('estres', estres); renderEstres(); }
     renderHoy();
-    if(db) db.collection(type).doc(id).delete().catch(()=>{});
+    if(db) getUserDocRef().collection(type).doc(id).delete().catch(()=>{});
   };
 
   function escapeHTML(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
@@ -685,11 +741,13 @@
 
   // Botón de reinicio completo
   $('#btn-clear-data').addEventListener('click', ()=>{
-    if(confirm('¿Seguro que quieres borrar todos los datos locales del navegador para volver a importar limpio?')){
-      ['nutricion','ejercicio','estres','fisiologico','sueno','regimen'].forEach(k => localStorage.removeItem('tfg_' + k));
-      nutricion = []; ejercicio = []; estres = []; fisiologico = []; sueno = []; regimen = null;
-      renderHoy(); renderNutricion(); renderEjercicio(); renderEstres(); renderRegimen();
-      alert('Memoria limpiada. Ahora importa tu archivo Excel.');
+    if(confirm('¿Seguro que quieres borrar todos los datos locales del navegador para este perfil?')){
+      ['nutricion','ejercicio','estres','fisiologico','sueno','regimen'].forEach(k => {
+        const user = getActiveUser();
+        localStorage.removeItem(`tfg_${user}_${k}`);
+      });
+      reloadUserData();
+      alert('Memoria limpiada para este perfil.');
     }
   });
 
@@ -796,7 +854,7 @@
 
         renderHoy();
 
-        alert(`¡Listo! Se han cargado permanentemente:\n- ${nutricion.length} comidas\n- ${ejercicio.length} sesiones de ejercicio\n- ${estres.length} registros de estrés\n- ${fisiologico.length} días fisiológicos\n- ${sueno.length} días de Sueño y Pasos`);
+        alert(`¡Listo! Se han cargado permanentemente para ${getActiveUser()}:\n- ${nutricion.length} comidas\n- ${ejercicio.length} sesiones de ejercicio\n- ${estres.length} registros de estrés\n- ${fisiologico.length} días fisiológicos\n- ${sueno.length} días de Sueño y Pasos`);
 
         if(db){
           nutricion.forEach(x=> cloudSet('nutricion', x.id, x));
@@ -859,16 +917,13 @@
     ]);
     XLSX.utils.book_append_sheet(wb, wsFisio, 'Datos Diarios Fisiológicos');
 
-    XLSX.writeFile(wb, `TFG_Diabetes_registro_${todayISO()}.xlsx`);
+    const user = getActiveUser();
+    XLSX.writeFile(wb, `TFG_Diabetes_${user}_${todayISO()}.xlsx`);
   });
 
-  // Inicialización
+  // Inicialización de datos
+  reloadUserData();
   setDefaultDates();
-  renderHoy();
-  renderNutricion();
-  renderEjercicio();
-  renderEstres();
-  renderRegimen();
   renderReminderForm();
   if(reminderConfig.enabled) ensureSchedule();
   setInterval(checkReminders, 20000);
