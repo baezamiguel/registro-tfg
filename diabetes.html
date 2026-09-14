@@ -122,16 +122,6 @@
   </header>
 
   <main>
-    <!-- SELECTOR DE PERFIL ACTIVO -->
-    <div style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 16px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
-      <label style="margin:0; color:var(--primary); font-weight:700; white-space:nowrap;">👤 Perfil activo:</label>
-      <select id="active-user" style="font-weight:650; color:var(--primary);">
-        <option value="vicente">Vicente (Hermano)</option>
-        <option value="participante2">Participante 2</option>
-        <option value="participante3">Participante 3</option>
-      </select>
-    </div>
-
     <!-- HOY -->
     <section class="tab active" data-tab="hoy">
       <div class="card">
@@ -274,6 +264,14 @@
     <!-- AJUSTES -->
     <section class="tab" data-tab="ajustes">
       <div class="card">
+        <h2>¿Para quién es este dispositivo? <small>Separa los datos por persona en la nube</small></h2>
+        <label>Nombre de la persona</label>
+        <input type="text" id="persona-nombre" placeholder="p. ej. Hermano, o su nombre">
+        <button id="btn-save-persona" class="btn btn-primary">Guardar persona</button>
+        <p style="font-size:12px;color:var(--muted);margin-top:8px;">Todo lo que se registre en este dispositivo se guardará en la nube bajo esta persona, separado del resto. Se puede cambiar en cualquier momento.</p>
+      </div>
+
+      <div class="card">
         <h2>Avisos aleatorios de estrés <small>Te recuerda anotar el estrés varias veces al día</small></h2>
         <div class="toggle-row">
           <label style="margin:0;">Activar avisos</label>
@@ -373,67 +371,112 @@
   const todayISO = () => new Date().toISOString().slice(0,10);
   const nowHM = () => new Date().toTimeString().slice(0,5);
 
-  // Obtiene el ID del usuario seleccionado actualmente
-  function getActiveUser(){
-    return $('#active-user') ? $('#active-user').value : 'vicente';
-  }
-
-  // Claves de localStorage aisladas por usuario
   const loadLocal = (k, def) => {
-    try { 
-      const user = getActiveUser();
-      const v = localStorage.getItem(`tfg_${user}_${k}`); 
-      return v ? JSON.parse(v) : def; 
-    } catch(e) { return def; }
+    try { const v = localStorage.getItem('tfg_' + k); return v ? JSON.parse(v) : def; } catch(e) { return def; }
   };
-  
   const saveLocal = (k, val) => {
-    try { 
-      const user = getActiveUser();
-      localStorage.setItem(`tfg_${user}_${k}`, JSON.stringify(val)); 
-    } catch(e) {}
+    try { localStorage.setItem('tfg_' + k, JSON.stringify(val)); } catch(e) {}
   };
 
-  let nutricion = [];
-  let ejercicio = [];
-  let estres = [];
-  let fisiologico = [];
-  let sueno = [];
-  let regimen = null;
-
-  function reloadUserData(){
-    nutricion = loadLocal('nutricion', []);
-    ejercicio = loadLocal('ejercicio', []);
-    estres = loadLocal('estres', []);
-    fisiologico = loadLocal('fisiologico', []);
-    sueno = loadLocal('sueno', []);
-    regimen = loadLocal('regimen', null);
-    
-    renderHoy();
-    renderNutricion();
-    renderEjercicio();
-    renderEstres();
-    renderRegimen();
-  }
+  let nutricion = loadLocal('nutricion', []);
+  let ejercicio = loadLocal('ejercicio', []);
+  let estres = loadLocal('estres', []);
+  let fisiologico = loadLocal('fisiologico', []);
+  let sueno = loadLocal('sueno', []);
+  let regimen = loadLocal('regimen', null);
 
   let reminderConfig = loadLocal('reminderConfig', {enabled:false,count:4,startHour:'08:00',endHour:'23:00'});
   let reminderSchedule = loadLocal('reminderSchedule', null);
 
-  // Ruta base en Firestore para el usuario activo: personas/{userId}
-  function getUserDocRef(){
-    const userId = getActiveUser();
-    return db.collection('personas').doc(userId);
+  // --- Persona: separa los datos de cada dispositivo dentro de Firestore
+  // (personas/{persona}/nutricion, .../ejercicio, etc.) ---
+  function slugify(s){
+    return (s||'').toString().trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+  }
+  function getPersonaSlug(){ return loadLocal('personaSlug', ''); }
+  function getPersonaNombre(){ return loadLocal('personaNombre', ''); }
+  function renderPersona(){
+    const nombre = getPersonaNombre();
+    $('#persona-nombre').value = nombre;
   }
 
+  // --- Cola de escrituras a la nube: evita perder datos si el usuario
+  // guarda un registro antes de que termine el inicio de sesión anónimo. ---
   let authReady = false;
   let pendingWrites = [];
   function cloudSet(collectionName, id, data){
     if(!db) return;
-    const doWrite = ()=> getUserDocRef().collection(collectionName).doc(id).set(data).catch(()=>{
+    const persona = getPersonaSlug();
+    if(!persona){
+      showToast('⚠️ Indica primero en Ajustes para quién es este dispositivo, para sincronizar con la nube.');
+      return;
+    }
+    const doWrite = ()=> db.collection('personas').doc(persona).collection(collectionName).doc(id).set(data).catch(()=>{
       showToast('⚠️ Guardado en el móvil, pero no se pudo copiar a la nube (revisa tu conexión).');
     });
     if(authReady) doWrite(); else pendingWrites.push(doWrite);
   }
+  function cloudDelete(collectionName, id){
+    const persona = getPersonaSlug();
+    if(!db || !persona) return;
+    db.collection('personas').doc(persona).collection(collectionName).doc(id).delete().catch(()=>{});
+  }
+
+  // --- Lectura en tiempo real: trae el historial completo de esta persona
+  // desde Firestore (incluye lo registrado desde otros dispositivos/sesiones). ---
+  let historyUnsubs = [];
+  function detachHistoryListeners(){
+    historyUnsubs.forEach(u=>{ try{ u(); }catch(e){} });
+    historyUnsubs = [];
+  }
+  function attachHistoryListeners(){
+    detachHistoryListeners();
+    const persona = getPersonaSlug();
+    if(!db || !authReady || !persona) return;
+    const base = db.collection('personas').doc(persona);
+
+    historyUnsubs.push(base.collection('nutricion').onSnapshot(snap=>{
+      nutricion = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      saveLocal('nutricion', nutricion);
+      renderNutricion(); renderHoy();
+    }, err=> console.error('nutricion', err)));
+
+    historyUnsubs.push(base.collection('ejercicio').onSnapshot(snap=>{
+      ejercicio = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      saveLocal('ejercicio', ejercicio);
+      renderEjercicio(); renderHoy();
+    }, err=> console.error('ejercicio', err)));
+
+    historyUnsubs.push(base.collection('estres').onSnapshot(snap=>{
+      estres = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      saveLocal('estres', estres);
+      renderEstres(); renderHoy();
+    }, err=> console.error('estres', err)));
+
+    historyUnsubs.push(base.collection('fisiologico').onSnapshot(snap=>{
+      fisiologico = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      saveLocal('fisiologico', fisiologico);
+      renderHoy();
+    }, err=> console.error('fisiologico', err)));
+
+    historyUnsubs.push(base.collection('ajustes').doc('regimen').onSnapshot(doc=>{
+      if(doc.exists){ regimen = doc.data(); saveLocal('regimen', regimen); renderRegimen(); }
+    }, err=> console.error('regimen', err)));
+  }
+
+  $('#btn-save-persona').addEventListener('click', ()=>{
+    const raw = $('#persona-nombre').value.trim();
+    if(!raw){ showToast('Escribe un nombre'); return; }
+    const slug = slugify(raw);
+    if(!slug){ showToast('Ese nombre no es válido, prueba con letras o números'); return; }
+    saveLocal('personaSlug', slug);
+    saveLocal('personaNombre', raw);
+    renderHoy();
+    attachHistoryListeners();
+    showToast('Este dispositivo registra ahora datos de: ' + raw);
+  });
 
   function showToast(msg){
     const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -445,12 +488,6 @@
     $$('nav.tabbar button').forEach(b=> b.classList.toggle('active', b.dataset.nav===name));
   }
   $$('nav.tabbar button').forEach(b=> b.addEventListener('click', ()=> goTab(b.dataset.nav)));
-
-  // Al cambiar de usuario en el desplegable, recargamos sus datos
-  $('#active-user').addEventListener('change', ()=>{
-    reloadUserData();
-    showToast('Perfil cambiado a: ' + $('#active-user').selectedOptions[0].text);
-  });
 
   function ensureDDMMYYYY(val){
     if(!val) return '';
@@ -518,7 +555,7 @@
     $('#stat-nut').textContent = nutricion.filter(e=>ensureDDMMYYYY(e.fecha)===todayStr).length;
     $('#stat-ej').textContent = ejercicio.filter(e=>ensureDDMMYYYY(e.fecha)===todayStr).length;
     $('#stat-est').textContent = estres.filter(e=>ensureDDMMYYYY(e.fecha)===todayStr).length;
-    $('#today-label').textContent = 'Datos para el TFG · ' + new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
+    $('#today-label').textContent = (getPersonaNombre() ? getPersonaNombre() + ' · ' : '') + new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
     const f = fisiologico.find(e=>ensureDDMMYYYY(e.fecha)===todayStr);
     $('#fisio-fecha').value = todayISO();
     $('#fisio-ciclo').value = f ? f.ciclo : 'N/A';
@@ -569,14 +606,7 @@
   }
 
   function renderRegimen(){
-    if(!regimen) {
-      $('#reg-desayuno').value = '';
-      $('#reg-almuerzo').value = '';
-      $('#reg-comida').value = '';
-      $('#reg-merienda').value = '';
-      $('#reg-cena').value = '';
-      return;
-    }
+    if(!regimen) return;
     $('#reg-desayuno').value = regimen.desayuno ?? '';
     $('#reg-almuerzo').value = regimen.almuerzo ?? '';
     $('#reg-comida').value = regimen.comida ?? '';
@@ -590,7 +620,7 @@
     if(type==='ejercicio') { ejercicio = ejercicio.filter(x=>x.id!==id); saveLocal('ejercicio', ejercicio); renderEjercicio(); }
     if(type==='estres') { estres = estres.filter(x=>x.id!==id); saveLocal('estres', estres); renderEstres(); }
     renderHoy();
-    if(db) getUserDocRef().collection(type).doc(id).delete().catch(()=>{});
+    cloudDelete(type, id);
   };
 
   function escapeHTML(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
@@ -741,13 +771,11 @@
 
   // Botón de reinicio completo
   $('#btn-clear-data').addEventListener('click', ()=>{
-    if(confirm('¿Seguro que quieres borrar todos los datos locales del navegador para este perfil?')){
-      ['nutricion','ejercicio','estres','fisiologico','sueno','regimen'].forEach(k => {
-        const user = getActiveUser();
-        localStorage.removeItem(`tfg_${user}_${k}`);
-      });
-      reloadUserData();
-      alert('Memoria limpiada para este perfil.');
+    if(confirm('¿Seguro que quieres borrar todos los datos locales del navegador para volver a importar limpio?')){
+      ['nutricion','ejercicio','estres','fisiologico','sueno','regimen'].forEach(k => localStorage.removeItem('tfg_' + k));
+      nutricion = []; ejercicio = []; estres = []; fisiologico = []; sueno = []; regimen = null;
+      renderHoy(); renderNutricion(); renderEjercicio(); renderEstres(); renderRegimen();
+      alert('Memoria limpiada. Ahora importa tu archivo Excel.');
     }
   });
 
@@ -854,7 +882,7 @@
 
         renderHoy();
 
-        alert(`¡Listo! Se han cargado permanentemente para ${getActiveUser()}:\n- ${nutricion.length} comidas\n- ${ejercicio.length} sesiones de ejercicio\n- ${estres.length} registros de estrés\n- ${fisiologico.length} días fisiológicos\n- ${sueno.length} días de Sueño y Pasos`);
+        alert(`¡Listo! Se han cargado permanentemente:\n- ${nutricion.length} comidas\n- ${ejercicio.length} sesiones de ejercicio\n- ${estres.length} registros de estrés\n- ${fisiologico.length} días fisiológicos\n- ${sueno.length} días de Sueño y Pasos`);
 
         if(db){
           nutricion.forEach(x=> cloudSet('nutricion', x.id, x));
@@ -917,14 +945,18 @@
     ]);
     XLSX.utils.book_append_sheet(wb, wsFisio, 'Datos Diarios Fisiológicos');
 
-    const user = getActiveUser();
-    XLSX.writeFile(wb, `TFG_Diabetes_${user}_${todayISO()}.xlsx`);
+    XLSX.writeFile(wb, `TFG_Diabetes_registro_${todayISO()}.xlsx`);
   });
 
-  // Inicialización de datos
-  reloadUserData();
+  // Inicialización
   setDefaultDates();
+  renderHoy();
+  renderNutricion();
+  renderEjercicio();
+  renderEstres();
+  renderRegimen();
   renderReminderForm();
+  renderPersona();
   if(reminderConfig.enabled) ensureSchedule();
   setInterval(checkReminders, 20000);
 
@@ -936,6 +968,8 @@
         $('#connection-status').style.background = 'rgba(76, 175, 80, 0.4)';
         pendingWrites.forEach(fn=>fn());
         pendingWrites = [];
+        attachHistoryListeners();
+        if(!getPersonaSlug()) showToast('Indica en Ajustes para quién es este dispositivo, para ver el historial completo.');
       })
       .catch(()=>{
         $('#connection-status').textContent = 'Modo Local';
