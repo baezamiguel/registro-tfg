@@ -307,8 +307,6 @@
         <input type="file" id="file-import" accept=".xlsx">
         <div class="divider"></div>
         <button id="btn-export" class="btn btn-ghost">Descargar Excel con lo registrado</button>
-        <div class="divider"></div>
-        <button id="btn-clear-data" class="btn btn-danger">Borrar datos locales y reiniciar</button>
       </div>
     </section>
   </main>
@@ -388,8 +386,6 @@
   let reminderConfig = loadLocal('reminderConfig', {enabled:false,count:4,startHour:'08:00',endHour:'23:00'});
   let reminderSchedule = loadLocal('reminderSchedule', null);
 
-  // --- Persona: separa los datos de cada dispositivo dentro de Firestore
-  // (personas/{persona}/nutricion, .../ejercicio, etc.) ---
   function slugify(s){
     return (s||'').toString().trim().toLowerCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
@@ -402,19 +398,17 @@
     $('#persona-nombre').value = nombre;
   }
 
-  // --- Cola de escrituras a la nube: evita perder datos si el usuario
-  // guarda un registro antes de que termine el inicio de sesión anónimo. ---
   let authReady = false;
   let pendingWrites = [];
   function cloudSet(collectionName, id, data){
     if(!db) return;
     const persona = getPersonaSlug();
     if(!persona){
-      showToast('⚠️ Indica primero en Ajustes para quién es este dispositivo, para sincronizar con la nube.');
+      showToast('⚠️ Indica primero en Ajustes para quién es este dispositivo.');
       return;
     }
     const doWrite = ()=> db.collection('personas').doc(persona).collection(collectionName).doc(id).set(data).catch(()=>{
-      showToast('⚠️ Guardado en el móvil, pero no se pudo copiar a la nube (revisa tu conexión).');
+      showToast('⚠️ Guardado en el móvil, pero no se pudo copiar a la nube.');
     });
     if(authReady) doWrite(); else pendingWrites.push(doWrite);
   }
@@ -424,8 +418,6 @@
     db.collection('personas').doc(persona).collection(collectionName).doc(id).delete().catch(()=>{});
   }
 
-  // --- Lectura en tiempo real: trae el historial completo de esta persona
-  // desde Firestore (incluye lo registrado desde otros dispositivos/sesiones). ---
   let historyUnsubs = [];
   function detachHistoryListeners(){
     historyUnsubs.forEach(u=>{ try{ u(); }catch(e){} });
@@ -470,12 +462,12 @@
     const raw = $('#persona-nombre').value.trim();
     if(!raw){ showToast('Escribe un nombre'); return; }
     const slug = slugify(raw);
-    if(!slug){ showToast('Ese nombre no es válido, prueba con letras o números'); return; }
+    if(!slug){ showToast('Ese nombre no es válido'); return; }
     saveLocal('personaSlug', slug);
     saveLocal('personaNombre', raw);
     renderHoy();
     attachHistoryListeners();
-    showToast('Este dispositivo registra ahora datos de: ' + raw);
+    showToast('Dispositivo asignado a: ' + raw);
   });
 
   function showToast(msg){
@@ -535,12 +527,10 @@
     return new Date(y, m, d, h, min).getTime() || 0;
   }
 
-  // Orden en pantalla: lo más nuevo arriba (descendente)
   function compareChronologicalDesc(a, b){
     return toExactTimestamp(b.fecha, b.hora) - toExactTimestamp(a.fecha, a.hora);
   }
 
-  // Orden para el EXCEL: lo más antiguo arriba (ascendente)
   function compareChronologicalAsc(a, b){
     return toExactTimestamp(a.fecha, a.hora) - toExactTimestamp(b.fecha, b.hora);
   }
@@ -769,16 +759,6 @@
     goTab('estres');
   });
 
-  // Botón de reinicio completo
-  $('#btn-clear-data').addEventListener('click', ()=>{
-    if(confirm('¿Seguro que quieres borrar todos los datos locales del navegador para volver a importar limpio?')){
-      ['nutricion','ejercicio','estres','fisiologico','sueno','regimen'].forEach(k => localStorage.removeItem('tfg_' + k));
-      nutricion = []; ejercicio = []; estres = []; fisiologico = []; sueno = []; regimen = null;
-      renderHoy(); renderNutricion(); renderEjercicio(); renderEstres(); renderRegimen();
-      alert('Memoria limpiada. Ahora importa tu archivo Excel.');
-    }
-  });
-
   // IMPORTACIÓN DE EXCEL
   $('#file-import').addEventListener('change', function(ev){
     const file = ev.target.files && ev.target.files[0];
@@ -969,7 +949,7 @@
         pendingWrites.forEach(fn=>fn());
         pendingWrites = [];
         attachHistoryListeners();
-        if(!getPersonaSlug()) showToast('Indica en Ajustes para quién es este dispositivo, para ver el historial completo.');
+        if(!getPersonaSlug()) showToast('Indica en Ajustes para quién es este dispositivo.');
       })
       .catch(()=>{
         $('#connection-status').textContent = 'Modo Local';
