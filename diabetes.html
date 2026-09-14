@@ -134,18 +134,28 @@
       </div>
 
       <div class="card">
-        <h2>Datos fisiológicos de hoy <small>Una fila al día — ciclo menstrual y enfermedad</small></h2>
+        <h2>Datos fisiológicos de hoy <small>Ciclo menstrual, enfermedad y temperatura</small></h2>
         <form id="form-fisio">
           <label>Fecha</label>
           <input type="date" id="fisio-fecha" required>
-          <label>Ciclo menstrual</label>
-          <select id="fisio-ciclo">
-            <option value="N/A">N/A</option>
-            <option value="Menstruación">Menstruación</option>
-            <option value="Folicular">Folicular</option>
-            <option value="Ovulación">Ovulación</option>
-            <option value="Lútea">Lútea</option>
-          </select>
+          
+          <div class="row2">
+            <div>
+              <label>Ciclo menstrual</label>
+              <select id="fisio-ciclo">
+                <option value="N/A">N/A</option>
+                <option value="Menstruación">Menstruación</option>
+                <option value="Folicular">Folicular</option>
+                <option value="Ovulación">Ovulación</option>
+                <option value="Lútea">Lútea</option>
+              </select>
+            </div>
+            <div>
+              <label>Temperatura (°C)</label>
+              <input type="number" id="fisio-temp" min="34" max="43" step="0.1" placeholder="Ej. 36.5">
+            </div>
+          </div>
+
           <div class="toggle-row">
             <label style="margin:0;">¿Enfermedad o proceso infeccioso activo?</label>
             <label class="switch"><input type="checkbox" id="fisio-enfermedad"><span class="slider"></span></label>
@@ -549,6 +559,7 @@
     const f = fisiologico.find(e=>ensureDDMMYYYY(e.fecha)===todayStr);
     $('#fisio-fecha').value = todayISO();
     $('#fisio-ciclo').value = f ? f.ciclo : 'N/A';
+    $('#fisio-temp').value = f && f.temperatura !== undefined ? f.temperatura : '';
     $('#fisio-enfermedad').checked = f ? !!f.enfermedad : false;
     $('#fisio-notas').value = f ? (f.notas||'') : '';
   }
@@ -624,7 +635,14 @@
   $('#form-fisio').addEventListener('submit', (ev)=>{
     ev.preventDefault();
     const fecha = ensureDDMMYYYY($('#fisio-fecha').value);
-    const entry = { id: fecha, fecha, ciclo: $('#fisio-ciclo').value, enfermedad: $('#fisio-enfermedad').checked, notas: $('#fisio-notas').value.trim() };
+    const entry = { 
+      id: fecha, 
+      fecha, 
+      ciclo: $('#fisio-ciclo').value, 
+      temperatura: $('#fisio-temp').value ? Number($('#fisio-temp').value) : '',
+      enfermedad: $('#fisio-enfermedad').checked, 
+      notas: $('#fisio-notas').value.trim() 
+    };
     const idx = fisiologico.findIndex(x=>ensureDDMMYYYY(x.fecha)===fecha);
     if(idx>=0) fisiologico[idx] = entry; else fisiologico.push(entry);
     saveLocal('fisiologico', fisiologico);
@@ -838,11 +856,18 @@
         saveLocal('estres', estres);
         renderEstres();
 
-        // 4b. Datos Diarios Fisiológicos
+        // 4b. Datos Diarios Fisiológicos (Fecha, Ciclo, Temperatura, Enfermedad, Notas)
         const fisioRows = sheetRows('Datos Diarios Fisiológicos').slice(2).filter(r=>r.some(c=>c!==''));
         fisiologico = fisioRows.map((r)=>{
           const fecha = parseDateFromCell(r[0]);
-          return { id: fecha, fecha, ciclo: String(r[1]||'N/A'), enfermedad: String(r[2]).toUpperCase()==='TRUE', notas: String(r[3]||'') };
+          return { 
+            id: fecha, 
+            fecha, 
+            ciclo: String(r[1]||'N/A'), 
+            temperatura: r[2] !== '' && !isNaN(r[2]) ? Number(r[2]) : (r[3] !== '' && !isNaN(r[3]) ? Number(r[3]) : ''), // Compatible con estructura previa si la temp estaba desplazada
+            enfermedad: String(r[2] === true || String(r[2]).toUpperCase()==='TRUE' || r[3] === true || String(r[3]).toUpperCase()==='TRUE'), 
+            notas: String(r[4] || r[3] || '') 
+          };
         });
         saveLocal('fisiologico', fisiologico);
         renderHoy();
@@ -919,9 +944,9 @@
 
     const wsFisio = XLSX.utils.aoa_to_sheet([
       ['🩺 DATOS FISIOLÓGICOS DIARIOS  (una sola fila por día)'],
-      ['Fecha','Ciclo\nMenstrual','Enfermedad','Notas'],
+      ['Fecha','Ciclo\nMenstrual','Temperatura (°C)','Enfermedad','Notas'],
       ...[...fisiologico].sort((a,b)=>toExactTimestamp(a.fecha,'00:00')-toExactTimestamp(b.fecha,'00:00'))
-        .map(e=>[ensureDDMMYYYY(e.fecha),e.ciclo,e.enfermedad?'TRUE':'FALSE',e.notas||''])
+        .map(e=>[ensureDDMMYYYY(e.fecha), e.ciclo, e.temperatura !== '' ? Number(e.temperatura) : '', e.enfermedad?'TRUE':'FALSE', e.notas||''])
     ]);
     XLSX.utils.book_append_sheet(wb, wsFisio, 'Datos Diarios Fisiológicos');
 
